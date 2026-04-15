@@ -19,6 +19,8 @@ type WorkoutStore = {
   clearError: () => void
   bootstrap: () => Promise<void>
   selectUser: (userId: string) => Promise<void>
+  /** Clear the active profile (local); next load shows the user picker. */
+  exitUser: () => void
   createUser: (name: string) => Promise<void>
 
   addExercise: (input: Omit<Exercise, 'id'>) => Promise<string>
@@ -36,6 +38,8 @@ type WorkoutStore = {
   removeWorkout: (id: string) => Promise<void>
 
   setDayPlan: (isoDate: string, plan: DayPlan | null) => Promise<void>
+  /** Toggle whether this calendar day counts on the activity heatmap. */
+  setDayCompleted: (isoDate: string, completed: boolean) => Promise<void>
   saveWeeklyRules: (rules: WeeklyRule[]) => Promise<void>
 }
 
@@ -91,6 +95,17 @@ export const useWorkoutStore = create<WorkoutStore>((set, get) => ({
         weeklyRules: [],
       })
     }
+  },
+
+  exitUser: () => {
+    localStorage.removeItem(USER_STORAGE_KEY)
+    set({
+      currentUserId: null,
+      workouts: [],
+      schedule: {},
+      weeklyRules: [],
+      error: null,
+    })
   },
 
   selectUser: async (userId: string) => {
@@ -280,6 +295,25 @@ export const useWorkoutStore = create<WorkoutStore>((set, get) => ({
         return
       }
       await api.apiSetDayPlan(uid, isoDate, plan)
+      set((s) => ({
+        schedule: { ...s.schedule, [isoDate]: plan },
+      }))
+    } catch (e) {
+      const msg = e instanceof Error ? e.message : String(e)
+      set({ error: msg })
+      throw e
+    }
+  },
+
+  setDayCompleted: async (isoDate, completed) => {
+    const uid = get().currentUserId
+    if (!uid) {
+      set({ error: 'Select a user first' })
+      throw new Error('Select a user first')
+    }
+    set({ error: null })
+    try {
+      const plan = await api.apiPatchDayCompleted(uid, isoDate, completed)
       set((s) => ({
         schedule: { ...s.schedule, [isoDate]: plan },
       }))

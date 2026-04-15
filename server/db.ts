@@ -84,6 +84,23 @@ function migrateWorkoutExerciseSetsReps(db: InstanceType<typeof Database>) {
   `)
 }
 
+function dayPlansHasCompletedColumn(db: InstanceType<typeof Database>) {
+  const cols = db.prepare(`PRAGMA table_info(day_plans)`).all() as {
+    name: string
+  }[]
+  return cols.some((c) => c.name === 'completed')
+}
+
+/** Track whether the user marked the day done (heatmap uses this). */
+function migrateDayPlansCompleted(db: InstanceType<typeof Database>) {
+  if (!tableExists(db, 'day_plans')) return
+  if (dayPlansHasCompletedColumn(db)) return
+  db.exec(`
+    ALTER TABLE day_plans ADD COLUMN completed INTEGER NOT NULL DEFAULT 0;
+    UPDATE day_plans SET completed = 1;
+  `)
+}
+
 function migrate(db: InstanceType<typeof Database>) {
   db.exec(`
     CREATE TABLE IF NOT EXISTS users (
@@ -116,6 +133,7 @@ function migrate(db: InstanceType<typeof Database>) {
       iso_date TEXT NOT NULL,
       kind TEXT NOT NULL CHECK (kind IN ('rest', 'workout')),
       workout_id INTEGER REFERENCES workouts(id) ON DELETE CASCADE,
+      completed INTEGER NOT NULL DEFAULT 0 CHECK (completed IN (0, 1)),
       PRIMARY KEY (user_id, iso_date)
     );
 
@@ -129,4 +147,5 @@ function migrate(db: InstanceType<typeof Database>) {
   `)
 
   migrateWorkoutExerciseSetsReps(db)
+  migrateDayPlansCompleted(db)
 }

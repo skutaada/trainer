@@ -9,9 +9,9 @@ import {
   startOfMonth,
   subMonths,
 } from 'date-fns'
-import { ChevronLeft, ChevronRight, Moon, Repeat2 } from 'lucide-react'
+import { Check, ChevronLeft, ChevronRight, Moon, Repeat2 } from 'lucide-react'
 import { useWorkoutStore } from '../store/workoutStore'
-import type { DayPlan } from '../types'
+import type { DayPlan, WeekdayPlan, WeeklyRule } from '../types'
 import { Modal } from './Modal'
 import { WeeklyRhythm } from './WeeklyRhythm'
 
@@ -22,10 +22,7 @@ function mondayIndex(d: Date): number {
   return (d.getDay() + 6) % 7
 }
 
-function weeklyPlanForIso(
-  iso: string,
-  rules: { dayOfWeek: number; plan: DayPlan }[],
-): DayPlan | undefined {
+function weeklyPlanForIso(iso: string, rules: WeeklyRule[]): WeekdayPlan | undefined {
   const d = parseISO(iso)
   if (Number.isNaN(d.getTime())) return undefined
   const dow = mondayIndex(d)
@@ -42,6 +39,7 @@ export function MonthCalendar() {
   const workouts = useWorkoutStore((s) => s.workouts)
   const weeklyRules = useWorkoutStore((s) => s.weeklyRules)
   const setDayPlan = useWorkoutStore((s) => s.setDayPlan)
+  const setDayCompleted = useWorkoutStore((s) => s.setDayCompleted)
   const saveWeeklyRules = useWorkoutStore((s) => s.saveWeeklyRules)
 
   const [activeDate, setActiveDate] = useState<Date | null>(null)
@@ -76,9 +74,10 @@ export function MonthCalendar() {
           Monthly plan
         </h2>
         <p className="mt-1 text-sm leading-relaxed text-zinc-400">
-          Pick a month, then tap a day for a workout or rest. Use weekly rhythm
-          below for defaults like every Monday. Swipe the grid sideways on small
-          screens if needed.
+          Pick a month, then tap a day for a workout or rest. When you save a
+          day, confirm you did it to include it on the activity heatmap. Weekly
+          rhythm below sets defaults (Mon–Sun). Swipe the grid on small screens
+          if needed.
         </p>
       </div>
 
@@ -136,6 +135,8 @@ export function MonthCalendar() {
             const weekly = weeklyPlanForIso(key, weeklyRules)
             const plan = explicit ?? weekly
             const fromWeeklyOnly = !explicit && !!weekly
+            const needsDone =
+              !!explicit && !explicit.completed
             const label =
               plan?.kind === 'rest'
                 ? 'Rest'
@@ -149,9 +150,16 @@ export function MonthCalendar() {
                 type="button"
                 onClick={() => setActiveDate(d)}
                 className={[
-                  'flex min-h-[2.85rem] flex-col gap-0.5 rounded-xl border p-1.5 text-left transition active:scale-[0.98] sm:aspect-square sm:min-h-0 sm:p-1.5',
+                  'relative flex min-h-[2.85rem] flex-col gap-0.5 rounded-xl border p-1.5 text-left transition active:scale-[0.98] sm:aspect-square sm:min-h-0 sm:p-1.5',
                   'border-[var(--color-border)] bg-[var(--color-surface)] hover:border-[var(--color-accent)]/50',
-                  isToday(d) ? 'ring-2 ring-[var(--color-accent)]/40' : '',
+                  explicit?.completed
+                    ? 'border-emerald-800/40 bg-emerald-950/15'
+                    : '',
+                  isToday(d)
+                    ? 'ring-2 ring-[var(--color-accent)]/40'
+                    : needsDone
+                      ? 'ring-2 ring-amber-500/35'
+                      : '',
                 ].join(' ')}
               >
                 <span
@@ -184,6 +192,12 @@ export function MonthCalendar() {
                 ) : (
                   <span className="text-[10px] text-zinc-600">—</span>
                 )}
+                {explicit?.completed ? (
+                  <Check
+                    className="pointer-events-none absolute bottom-1 right-1 size-3.5 text-emerald-400/90 sm:bottom-0.5 sm:right-0.5 sm:size-3"
+                    aria-label="Marked done"
+                  />
+                ) : null}
               </button>
             )
           })}
@@ -202,6 +216,13 @@ export function MonthCalendar() {
             explicitPlan={activeExplicit}
             weeklyDefault={activeWeeklyDefault}
             workouts={workouts}
+            onSetCompleted={async (done) => {
+              try {
+                await setDayCompleted(activeIso, done)
+              } catch {
+                /* store */
+              }
+            }}
             onSave={async (plan) => {
               try {
                 await setDayPlan(activeIso, plan)
@@ -230,13 +251,15 @@ function DayEditor({
   explicitPlan,
   weeklyDefault,
   workouts,
+  onSetCompleted,
   onSave,
   onClear,
 }: {
   iso: string
   explicitPlan: DayPlan | undefined
-  weeklyDefault: DayPlan | undefined
+  weeklyDefault: WeekdayPlan | undefined
   workouts: { id: string; name: string }[]
+  onSetCompleted: (done: boolean) => Promise<void>
   onSave: (p: DayPlan) => Promise<void>
   onClear: () => Promise<void>
 }) {
@@ -248,6 +271,7 @@ function DayEditor({
     base?.kind === 'workout' ? base.workoutId : workouts[0]?.id ?? '',
   )
   const [pending, setPending] = useState(false)
+  const [doneBusy, setDoneBusy] = useState(false)
 
   useEffect(() => {
     const b = explicitPlan ?? weeklyDefault
@@ -315,15 +339,53 @@ function DayEditor({
           </div>
         </label>
       </fieldset>
+      {explicitPlan ? (
+        <div className="rounded-xl border border-[var(--color-border)] bg-[var(--color-surface)] p-4">
+          <label className="flex cursor-pointer items-start gap-3">
+            <input
+              type="checkbox"
+              checked={explicitPlan.completed}
+              disabled={doneBusy}
+              onChange={async (e) => {
+                setDoneBusy(true)
+                try {
+                  await onSetCompleted(e.target.checked)
+                } finally {
+                  setDoneBusy(false)
+                }
+              }}
+              className="mt-0.5 size-5 shrink-0 rounded border-[var(--color-border)] accent-[var(--color-accent)]"
+            />
+            <div>
+              <p className="text-sm font-medium text-white">
+                I did this (counts on heatmap)
+              </p>
+              <p className="mt-0.5 text-xs leading-relaxed text-zinc-500">
+                The team activity view only shows days you check here. Changing
+                the workout above clears this until you confirm again.
+              </p>
+            </div>
+          </label>
+        </div>
+      ) : (
+        <p className="text-xs leading-relaxed text-zinc-600">
+          Save this day first, then you can confirm it for the heatmap.
+        </p>
+      )}
       <div className="flex flex-col gap-2 pt-2 sm:flex-row sm:flex-wrap">
         <button
           type="button"
           onClick={async () => {
             setPending(true)
             try {
-              if (kind === 'rest') await onSave({ kind: 'rest' })
+              if (kind === 'rest')
+                await onSave({ kind: 'rest', completed: false })
               else if (workoutId)
-                await onSave({ kind: 'workout', workoutId })
+                await onSave({
+                  kind: 'workout',
+                  workoutId,
+                  completed: false,
+                })
             } finally {
               setPending(false)
             }

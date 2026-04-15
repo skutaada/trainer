@@ -143,6 +143,74 @@ app.post('/api/users', (req, res) => {
   }
 })
 
+function pad2(n: number) {
+  return n < 10 ? `0${n}` : `${n}`
+}
+
+function toLocalYmd(d: Date): string {
+  return `${d.getFullYear()}-${pad2(d.getMonth() + 1)}-${pad2(d.getDate())}`
+}
+
+function parseLocalYmd(s: string): Date {
+  const [y, m, d] = s.split('-').map(Number)
+  return new Date(y, m - 1, d)
+}
+
+function addDaysYmd(iso: string, delta: number): string {
+  const d = parseLocalYmd(iso)
+  d.setDate(d.getDate() + delta)
+  return toLocalYmd(d)
+}
+
+function mondayOnOrBefore(iso: string): string {
+  const d = parseLocalYmd(iso)
+  const dow = (d.getDay() + 6) % 7
+  d.setDate(d.getDate() - dow)
+  return toLocalYmd(d)
+}
+
+function sundayOnOrAfter(iso: string): string {
+  const d = parseLocalYmd(iso)
+  const dow = (d.getDay() + 6) % 7
+  d.setDate(d.getDate() + (6 - dow))
+  return toLocalYmd(d)
+}
+
+/** All users' explicit day plans in a date range (GitHub-style heatmap). */
+app.get('/api/heatmap', (_req, res) => {
+  const w = Number(_req.query.weeks ?? 26)
+  const weeks = Number.isInteger(w) && w > 0 && w <= 104 ? w : 26
+
+  const todayStr = toLocalYmd(new Date())
+  const tentativeStart = addDaysYmd(todayStr, -(weeks * 7 - 1))
+  const from = mondayOnOrBefore(tentativeStart)
+  const to = sundayOnOrAfter(todayStr)
+
+  const users = db
+    .prepare(`SELECT id, name FROM users ORDER BY name COLLATE NOCASE ASC`)
+    .all() as { id: number; name: string }[]
+
+  const plans = db
+    .prepare(
+      `SELECT dp.user_id AS userId, u.name AS userName, dp.iso_date AS isoDate, dp.kind,
+              w.name AS workoutName
+       FROM day_plans dp
+       JOIN users u ON u.id = dp.user_id
+       LEFT JOIN workouts w ON w.id = dp.workout_id AND w.user_id = dp.user_id
+       WHERE dp.iso_date >= ? AND dp.iso_date <= ? AND dp.completed = 1
+       ORDER BY dp.iso_date ASC, u.name ASC`,
+    )
+    .all(from, to) as {
+    userId: number
+    userName: string
+    isoDate: string
+    kind: 'rest' | 'workout'
+    workoutName: string | null
+  }[]
+
+  res.json({ from, to, today: todayStr, users, plans })
+})
+
 // --- snapshot ---
 
 app.get('/api/users/:userId/data', (req, res) => {
@@ -196,24 +264,31 @@ app.get('/api/users/:userId/data', (req, res) => {
 
   const dayRows = db
     .prepare(
-      `SELECT iso_date AS isoDate, kind, workout_id AS workoutId
+      `SELECT iso_date AS isoDate, kind, workout_id AS workoutId, completed
        FROM day_plans WHERE user_id = ?`,
     )
     .all(userId) as {
     isoDate: string
     kind: 'rest' | 'workout'
     workoutId: number | null
+    completed: number
   }[]
 
   const schedule: Record<
     string,
-    { kind: 'rest' } | { kind: 'workout'; workoutId: number }
+    | { kind: 'rest'; completed: boolean }
+    | { kind: 'workout'; workoutId: number; completed: boolean }
   > = {}
   for (const d of dayRows) {
+    const done = d.completed === 1
     if (d.kind === 'rest') {
-      schedule[d.isoDate] = { kind: 'rest' }
+      schedule[d.isoDate] = { kind: 'rest', completed: done }
     } else if (d.workoutId != null) {
-      schedule[d.isoDate] = { kind: 'workout', workoutId: d.workoutId }
+      schedule[d.isoDate] = {
+        kind: 'workout',
+        workoutId: d.workoutId,
+        completed: done,
+      }
     }
   }
 
@@ -653,21 +728,78 @@ app.put('/api/users/:userId/schedule/:isoDate', (req, res) => {
     workoutId = wid
   }
 
+  const completed =
+    req.body?.completed === true || req.body?.completed === 1 ? 1 : 0
+
   db.prepare(
-    `INSERT INTO day_plans (user_id, iso_date, kind, workout_id)
-     VALUES (?, ?, ?, ?)
+    `INSERT INTO day_plans (user_id, iso_date, kind, workout_id, completed)
+     VALUES (?, ?, ?, ?, ?)
      ON CONFLICT(user_id, iso_date) DO UPDATE SET
        kind = excluded.kind,
-       workout_id = excluded.workout_id`,
-  ).run(userId, isoDate, kind, workoutId)
+       workout_id = excluded.workout_id,
+       completed = excluded.completed`,
+  ).run(userId, isoDate, kind, workoutId, completed)
 
   if (kind === 'rest') {
-    return res.json({ isoDate, kind: 'rest' as const })
+    return res.json({
+      isoDate,
+      kind: 'rest' as const,
+      completed: completed === 1,
+    })
   }
   return res.json({
     isoDate,
     kind: 'workout' as const,
     workoutId: workoutId!,
+    completed: completed === 1,
+  })
+})
+
+app.patch('/api/users/:userId/schedule/:isoDate', (req, res) => {
+  const userId = parseId(req.params.userId)
+  if (userId === null) return badRequest(res, 'Invalid user id')
+  if (!userExists(db, userId)) return notFound(res)
+
+  const isoDate = String(req.params.isoDate ?? '')
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(isoDate)) {
+    return badRequest(res, 'isoDate must be yyyy-MM-dd')
+  }
+
+  if (typeof req.body?.completed !== 'boolean') {
+    return badRequest(res, 'completed must be a boolean')
+  }
+  const completed = req.body.completed ? 1 : 0
+
+  const info = db
+    .prepare(
+      `UPDATE day_plans SET completed = ? WHERE user_id = ? AND iso_date = ?`,
+    )
+    .run(completed, userId, isoDate)
+  if (info.changes === 0) return notFound(res)
+
+  const row = db
+    .prepare(
+      `SELECT kind, workout_id AS workoutId, completed
+       FROM day_plans WHERE user_id = ? AND iso_date = ?`,
+    )
+    .get(userId, isoDate) as {
+    kind: 'rest' | 'workout'
+    workoutId: number | null
+    completed: number
+  }
+
+  const done = row.completed === 1
+  if (row.kind === 'rest') {
+    return res.json({ isoDate, kind: 'rest' as const, completed: done })
+  }
+  if (row.workoutId == null) {
+    return badRequest(res, 'Invalid day plan row')
+  }
+  return res.json({
+    isoDate,
+    kind: 'workout' as const,
+    workoutId: row.workoutId,
+    completed: done,
   })
 })
 

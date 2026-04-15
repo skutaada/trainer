@@ -28,10 +28,11 @@ type ApiWorkoutRow = {
   exercises: ApiWorkoutExercise[]
 }
 
-type ApiScheduleWire = Record<
-  string,
-  { kind: 'rest' } | { kind: 'workout'; workoutId: number }
->
+type ApiScheduleDayWire =
+  | { kind: 'rest'; completed?: boolean }
+  | { kind: 'workout'; workoutId: number; completed?: boolean }
+
+type ApiScheduleWire = Record<string, ApiScheduleDayWire>
 
 type ApiWeeklyRuleWire =
   | { dayOfWeek: number; kind: 'rest' }
@@ -70,10 +71,26 @@ function exercisesToWire(slots: WorkoutExerciseSlot[]) {
 function mapSchedule(wire: ApiScheduleWire): Record<string, DayPlan> {
   const out: Record<string, DayPlan> = {}
   for (const [iso, v] of Object.entries(wire)) {
-    if (v.kind === 'rest') out[iso] = { kind: 'rest' }
-    else out[iso] = { kind: 'workout', workoutId: String(v.workoutId) }
+    const done = v.completed === true
+    if (v.kind === 'rest') out[iso] = { kind: 'rest', completed: done }
+    else
+      out[iso] = {
+        kind: 'workout',
+        workoutId: String(v.workoutId),
+        completed: done,
+      }
   }
   return out
+}
+
+function wireDayToPlan(row: ApiScheduleDayWire): DayPlan {
+  const done = row.completed === true
+  if (row.kind === 'rest') return { kind: 'rest', completed: done }
+  return {
+    kind: 'workout',
+    workoutId: String(row.workoutId),
+    completed: done,
+  }
 }
 
 function mapWeeklyRules(wire: ApiWeeklyRuleWire[]): WeeklyRule[] {
@@ -127,6 +144,28 @@ export async function listExercises(): Promise<Exercise[]> {
 export async function listUsers(): Promise<ApiUser[]> {
   const res = await fetch('/api/users')
   return json<ApiUser[]>(res)
+}
+
+export type HeatmapPlanEntry = {
+  isoDate: string
+  userId: number
+  userName: string
+  kind: 'rest' | 'workout'
+  workoutName: string | null
+}
+
+export type HeatmapPayload = {
+  from: string
+  to: string
+  today: string
+  users: ApiUser[]
+  plans: HeatmapPlanEntry[]
+}
+
+export async function fetchHeatmap(weeks = 26): Promise<HeatmapPayload> {
+  const w = Number.isInteger(weeks) && weeks > 0 ? weeks : 26
+  const res = await fetch(`/api/heatmap?weeks=${encodeURIComponent(String(w))}`)
+  return json<HeatmapPayload>(res)
 }
 
 export async function createUser(name: string): Promise<ApiUser> {
@@ -261,12 +300,33 @@ export async function apiSetDayPlan(
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(
         plan.kind === 'rest'
-          ? { kind: 'rest' }
-          : { kind: 'workout', workoutId: Number(plan.workoutId) },
+          ? { kind: 'rest', completed: plan.completed }
+          : {
+              kind: 'workout',
+              workoutId: Number(plan.workoutId),
+              completed: plan.completed,
+            },
       ),
     },
   )
   await json<unknown>(res)
+}
+
+export async function apiPatchDayCompleted(
+  userId: string,
+  isoDate: string,
+  completed: boolean,
+): Promise<DayPlan> {
+  const res = await fetch(
+    `/api/users/${userId}/schedule/${encodeURIComponent(isoDate)}`,
+    {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ completed }),
+    },
+  )
+  const row = await json<ApiScheduleDayWire & { isoDate: string }>(res)
+  return wireDayToPlan(row)
 }
 
 export async function apiClearDayPlan(userId: string, isoDate: string) {
