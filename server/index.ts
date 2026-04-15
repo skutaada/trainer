@@ -8,6 +8,7 @@ import { openDatabase } from './db.js'
 const __dirname = path.dirname(fileURLToPath(import.meta.url))
 const isProd = process.env.NODE_ENV === 'production'
 const PORT = Number(process.env.PORT ?? (isProd ? 3000 : 3001))
+const HOST = process.env.HOST ?? (isProd ? '0.0.0.0' : '127.0.0.1')
 
 const db = openDatabase()
 
@@ -832,8 +833,8 @@ app.use((err: Error, _req: Request, res: Response, next: NextFunction) => {
   res.status(500).json({ error: 'Internal server error' })
 })
 
-app.listen(PORT, () => {
+app.listen(PORT, HOST, () => {
   console.log(
-    `[trainer] API ${isProd ? '+ static' : ''} on http://127.0.0.1:${PORT}`,
+    `[trainer] API ${isProd ? '+ static' : ''} on http://${HOST}:${PORT}`,
   )
 })
