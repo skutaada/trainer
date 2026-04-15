@@ -1,0 +1,23 @@
+# Trainer: Vite build + Express API + SQLite (persistent volume on /data)
+#
+# Usage:
+#   docker compose up --build
+#   open http://localhost:3000
+#
+services:
+  trainer:
+    build: .
+    image: trainer:latest
+    container_name: trainer
+    ports:
+      - "${PORT:-3000}:3000"
+    environment:
+      NODE_ENV: production
+      PORT: "3000"
+      SQLITE_PATH: /data/trainer.db
+    volumes:
+      - trainer_data:/data
+    restart: unless-stopped
+
+volumes:
+  trainer_data:

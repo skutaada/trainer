@@ -1,0 +1,37 @@
+@import 'tailwindcss';
+
+@theme {
+  --font-sans: 'DM Sans', ui-sans-serif, system-ui, sans-serif;
+  --color-surface: oklch(0.17 0.02 280);
+  --color-surface-raised: oklch(0.22 0.025 280);
+  --color-border: oklch(0.32 0.02 280);
+  --color-accent: oklch(0.72 0.19 280);
+  --color-accent-muted: oklch(0.55 0.14 280);
+}
+
+html {
+  color-scheme: dark;
+}
+
+body {
+  margin: 0;
+  min-height: 100dvh;
+  min-height: 100svh;
+  font-family: var(--font-sans);
+  background: var(--color-surface);
+  color: oklch(0.88 0.01 280);
+  -webkit-font-smoothing: antialiased;
+  overscroll-behavior-y: contain;
+}
+
+#root {
+  min-height: 100dvh;
+  min-height: 100svh;
+}
+
+/* Snappier taps on mobile; avoids double-tap zoom on controls */
+button,
+[role='button'],
+a[href] {
+  touch-action: manipulation;
+}
